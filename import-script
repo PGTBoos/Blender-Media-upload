@@ -1,0 +1,294 @@
+"""
+Vacation Media Importer for Blender 5.0.1
+Imports photos and videos from two sources, sorts chronologically,
+and places them on the Video Sequencer timeline.
+
+Run this script from Blender's Text Editor (Scripting workspace).
+"""
+
+import bpy
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+
+# =============================================================================
+# CONFIGURATION - Adjust these paths and settings as needed
+# =============================================================================
+
+# Cristina's media folder
+CRISTINA_FOLDER = r"C:\data\fotocristina_vakantie"
+
+# Peter's media folder
+PETER_FOLDER = r"D:\fotos\Xiaomi\Camera"
+
+# Date range filter (inclusive)
+DATE_START = datetime(2025, 7, 19)
+DATE_END = datetime(2025, 8, 2)
+
+# Duration for photos in seconds
+PHOTO_TIME = 3.0
+
+# Output settings
+FRAME_RATE = 30  # fps
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def parse_cristina_filename(filename: str) -> datetime | None:
+    """
+    Parse Cristina's filename format: 20250719_145547.jpg or .mp4
+    Returns datetime or None if not matching.
+    """
+    pattern = r"^(\d{8})_(\d{6})\.(jpg|jpeg|png|mp4|mov|avi)$"
+    match = re.match(pattern, filename, re.IGNORECASE)
+    if match:
+        date_str = match.group(1)
+        time_str = match.group(2)
+        try:
+            return datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
+        except ValueError:
+            return None
+    return None
+
+
+def parse_peter_filename(filename: str) -> datetime | None:
+    """
+    Parse Peter's filename format: IMG_20250723_233732.jpg or VID_20250719_175738.mp4
+    Returns datetime or None if not matching.
+    """
+    pattern = r"^(IMG|VID)_(\d{8})_(\d{6})\.(jpg|jpeg|png|mp4|mov|avi)$"
+    match = re.match(pattern, filename, re.IGNORECASE)
+    if match:
+        date_str = match.group(2)
+        time_str = match.group(3)
+        try:
+            return datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
+        except ValueError:
+            return None
+    return None
+
+
+def is_photo(filename: str) -> bool:
+    """Check if file is a photo based on extension."""
+    photo_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+    return Path(filename).suffix.lower() in photo_extensions
+
+
+def is_video(filename: str) -> bool:
+    """Check if file is a video based on extension."""
+    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
+    return Path(filename).suffix.lower() in video_extensions
+
+
+def collect_media_files(folder: str, parser_func) -> list[dict]:
+    """
+    Collect all valid media files from a folder.
+    Returns list of dicts with 'path', 'datetime', 'is_video' keys.
+    """
+    media_files = []
+    
+    if not os.path.exists(folder):
+        print(f"WARNING: Folder does not exist: {folder}")
+        return media_files
+    
+    for filename in os.listdir(folder):
+        filepath = os.path.join(folder, filename)
+        
+        # Skip directories
+        if os.path.isdir(filepath):
+            continue
+        
+        # Parse datetime from filename
+        file_datetime = parser_func(filename)
+        if file_datetime is None:
+            continue
+        
+        # Check date range
+        if not (DATE_START <= file_datetime <= DATE_END.replace(hour=23, minute=59, second=59)):
+            continue
+        
+        # Determine if photo or video
+        if is_photo(filename):
+            media_files.append({
+                'path': filepath,
+                'datetime': file_datetime,
+                'is_video': False,
+                'source': folder
+            })
+        elif is_video(filename):
+            media_files.append({
+                'path': filepath,
+                'datetime': file_datetime,
+                'is_video': True,
+                'source': folder
+            })
+    
+    return media_files
+
+
+def get_video_duration_frames(filepath: str) -> int:
+    """
+    Get video duration in frames.
+    Uses a temporary movie strip to determine length.
+    """
+    # We'll need to add the strip temporarily to get its frame count
+    # This will be handled during the actual import
+    return 0  # Placeholder - actual duration determined during import
+
+
+def setup_sequencer():
+    """Ensure the Video Sequence Editor is set up properly."""
+    # Make sure we have a scene
+    scene = bpy.context.scene
+    
+    # Set frame rate
+    scene.render.fps = FRAME_RATE
+    scene.render.fps_base = 1.0
+    
+    # Ensure sequence editor exists
+    if scene.sequence_editor is None:
+        scene.sequence_editor_create()
+    
+    return scene.sequence_editor
+
+
+def clear_sequencer(seq_editor):
+    """Remove all existing strips from the sequencer."""
+    if seq_editor.sequences:
+        for strip in seq_editor.sequences:
+            seq_editor.sequences.remove(strip)
+
+
+# =============================================================================
+# MAIN IMPORT FUNCTION
+# =============================================================================
+
+def import_vacation_media():
+    """Main function to import all vacation media chronologically."""
+    
+    print("=" * 60)
+    print("Nordkapp Vacation Media Importer")
+    print("=" * 60)
+    
+    # Collect media from both sources
+    print(f"\nScanning Cristina's folder: {CRISTINA_FOLDER}")
+    cristina_media = collect_media_files(CRISTINA_FOLDER, parse_cristina_filename)
+    print(f"  Found {len(cristina_media)} files in date range")
+    
+    print(f"\nScanning Peter's folder: {PETER_FOLDER}")
+    peter_media = collect_media_files(PETER_FOLDER, parse_peter_filename)
+    print(f"  Found {len(peter_media)} files in date range")
+    
+    # Combine and sort chronologically
+    all_media = cristina_media + peter_media
+    all_media.sort(key=lambda x: x['datetime'])
+    
+    print(f"\nTotal media files to import: {len(all_media)}")
+    
+    if not all_media:
+        print("No media files found! Check your folder paths and date range.")
+        return
+    
+    # Setup sequencer
+    seq_editor = setup_sequencer()
+    
+    # Ask user if they want to clear existing strips
+    # For script, we'll clear by default - comment out if you want to keep existing
+    clear_sequencer(seq_editor)
+    print("\nCleared existing sequencer strips")
+    
+    # Calculate photo duration in frames
+    photo_frames = int(PHOTO_TIME * FRAME_RATE)
+    
+    # Import media sequentially
+    current_frame = 1
+    channel = 1  # Use channel 1 for all media
+    
+    imported_count = 0
+    failed_imports = []
+    
+    print("\nImporting media...")
+    print("-" * 60)
+    
+    for i, media in enumerate(all_media):
+        filepath = media['path']
+        filename = os.path.basename(filepath)
+        timestamp = media['datetime'].strftime("%Y-%m-%d %H:%M:%S")
+        media_type = "VIDEO" if media['is_video'] else "PHOTO"
+        
+        try:
+            if media['is_video']:
+                # Import video
+                strip = seq_editor.sequences.new_movie(
+                    name=filename,
+                    filepath=filepath,
+                    channel=channel,
+                    frame_start=current_frame
+                )
+                duration = strip.frame_final_duration
+                
+                # Check if video has audio and add it
+                # In Blender 5.x, audio is handled separately
+                try:
+                    sound_strip = seq_editor.sequences.new_sound(
+                        name=f"{filename}_audio",
+                        filepath=filepath,
+                        channel=channel + 1,
+                        frame_start=current_frame
+                    )
+                except:
+                    pass  # Video might not have audio
+                
+            else:
+                # Import photo
+                strip = seq_editor.sequences.new_image(
+                    name=filename,
+                    filepath=filepath,
+                    channel=channel,
+                    frame_start=current_frame,
+                    fit_method='FIT'
+                )
+                # Set photo duration
+                strip.frame_final_end = current_frame + photo_frames
+                duration = photo_frames
+            
+            print(f"  [{i+1:4d}/{len(all_media)}] {media_type:5s} | {timestamp} | {filename}")
+            
+            # Move to next position
+            current_frame += duration
+            imported_count += 1
+            
+        except Exception as e:
+            failed_imports.append((filepath, str(e)))
+            print(f"  [{i+1:4d}/{len(all_media)}] FAILED | {filename} | Error: {e}")
+    
+    # Set scene frame range
+    bpy.context.scene.frame_start = 1
+    bpy.context.scene.frame_end = current_frame - 1
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("IMPORT COMPLETE")
+    print("=" * 60)
+    print(f"Successfully imported: {imported_count} files")
+    print(f"Failed imports: {len(failed_imports)}")
+    print(f"Total timeline duration: {current_frame - 1} frames ({(current_frame - 1) / FRAME_RATE:.1f} seconds)")
+    print(f"Timeline range: Frame 1 to {current_frame - 1}")
+    
+    if failed_imports:
+        print("\nFailed files:")
+        for path, error in failed_imports:
+            print(f"  - {path}: {error}")
+    
+    print("\nTip: Switch to the Video Editing workspace to see your timeline!")
+    print("You can now make modifications, add effects, delete clips, etc.")
+
+
+# =============================================================================
+# RUN THE SCRIPT
+# =============================================================================
+
+if __name__ == "__main__":
+    import_vacation_media()
